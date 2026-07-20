@@ -1,0 +1,144 @@
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------------------------
+  # 1. MySQL Database Service
+  # ---------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    container_name: rag-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: rag_db
+      TZ: UTC
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - rag-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${SPRING_DATASOURCE_PASSWORD:-rootpassword}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # 2. Flask AI Engine Service
+  # ---------------------------------------------------------------------------
+  ai-engine:
+    build:
+      context: ./ai-engine
+      dockerfile: Dockerfile
+    container_name: rag-ai-engine
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: 5000
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      HUGGINGFACE_HUB_TOKEN: ${HUGGINGFACE_HUB_TOKEN:-}
+      UPLOADS_FOLDER: /app/uploads
+      VECTORDB_DIR: /app/vectordb/chroma_db
+      TEXT_LLM_MODEL: ${TEXT_LLM_MODEL:-llama-3.3-70b-versatile}
+      IMAGE_LLM_MODEL: ${IMAGE_LLM_MODEL:-gemini-2.5-flash}
+      CIRCUIT_LLM_MODEL: ${CIRCUIT_LLM_MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}
+      EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-sentence-transformers/all-MiniLM-L6-v2}
+    ports:
+      - "5000:5000"
+    volumes:
+      - ai_uploads:/app/uploads
+      - ai_vectordb:/app/vectordb
+    networks:
+      - rag-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/ || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # 3. Spring Boot Backend Service
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rag-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      ai-engine:
+        condition: service_healthy
+    environment:
+      PORT: 8080
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/rag_db?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-root}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:-rootpassword}
+      JWT_SECRET: ${JWT_SECRET:-ZGV2X3NlY3JldF9rZXlfZGV2X3NlY3JldF9rZXlfZGV2X3NlY3JldF9rZXk=}
+      JWT_EXPIRATION: ${JWT_EXPIRATION:-86400000}
+      AI_ENGINE_BASE_URL: http://ai-engine:5000
+      APP_UPLOAD_DIR: /app/stored_documents
+    ports:
+      - "8080:8080"
+    volumes:
+      - backend_stored_documents:/app/stored_documents
+    networks:
+      - rag-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/api/auth/login || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  # ---------------------------------------------------------------------------
+  # 4. Vite React Frontend Service (Nginx)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8080}
+    container_name: rag-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "5173:80"
+    networks:
+      - rag-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+# -----------------------------------------------------------------------------
+# Named Docker Volumes for Data Persistence
+# -----------------------------------------------------------------------------
+volumes:
+  mysql_data:
+    driver: local
+  ai_uploads:
+    driver: local
+  ai_vectordb:
+    driver: local
+  backend_stored_documents:
+    driver: local
+
+# -----------------------------------------------------------------------------
+# Custom Docker Bridge Network
+# -----------------------------------------------------------------------------
+networks:
+  rag-network:
+    driver: bridge

@@ -1,0 +1,20 @@
+# Build Target
+target/
+
+# Environment Configuration & Secrets
+.env
+.env.local
+
+# Logs
+logs/
+*.log
+
+# Uploaded Storage Directory
+stored_documents/
+
+# IDE & OS Files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.iml
